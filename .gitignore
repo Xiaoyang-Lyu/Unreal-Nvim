@@ -1,0 +1,53 @@
+# Compiled Lua sources
+luac.out
+
+# Lua binary modules
+*.so
+*.dll
+
+# Object files
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects
+*.so
+*.so.*
+
+# Vim swap files
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+
+# Neovim session files
+Session.vim
+Sessionx.vim
+
+# Temporary files
+.netrwhist
+*~
+
+# Auto-generated tag files
+tags
+
+# Persistent undo
+[._]*.un~
+
+# Logs
+logs
+*.log
+
+# OS specific files
+.DS_Store
+Thumbs.db
