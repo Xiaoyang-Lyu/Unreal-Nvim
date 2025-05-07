@@ -1,435 +1,346 @@
--- File: lua/unreal-nvim/init.lua
-local UE_Nvim = {}
+---@diagnostic disable: undefined-global
+
+local UE = {}
+
+-- Configuration defaults
 local config = {
-  engine_path = nil, -- User-configurable engine path
-  auto_register_clangd = false,
+	engine_path = nil,
+	auto_register_clangd = false,
 }
+local cached_engine_root = nil
 
--- Finds the root .uproject file by searching upwards from a starting directory
-local function find_uproject(start_dir)
-  local dir = vim.fn.fnamemodify(start_dir or vim.fn.getcwd(), ':p')
-  dir = vim.loop.fs_realpath(dir) or dir
-  while dir do
-    local candidates = vim.fn.glob(dir .. '/*.uproject', false, true)
-    if #candidates > 0 then
-      return candidates[1]
-    end
-    local parent = vim.fn.fnamemodify(dir, ':h')
-    if parent == nil or parent == '' or parent == dir then
-      break
-    end
-    dir = parent
-  end
-  return nil
+-- Supported modes and build configurations
+local MODES = { BUILD = "build", HEADER = "header", COMPILE = "compile" }
+local CONFIGS = { "DebugGame", "Development", "Shipping", "Debug", "Test" }
+
+-- Search upwards for a matching file pattern
+local function find_in_parents(start_dir, pattern)
+	local dir = vim.loop.fs_realpath(start_dir or vim.fn.getcwd()) or vim.fn.getcwd()
+	while dir and dir ~= "" do
+		local matches = vim.fn.glob(dir .. "/" .. pattern, false, true)
+		if #matches > 0 then
+			return matches[1]
+		end
+		local parent = vim.fn.fnamemodify(dir, ":h")
+		if parent == dir then
+			break
+		end
+		dir = parent
+	end
+	return nil
 end
 
--- Finds all target names from .Target.cs files in the project's Source directory
-local function find_target_names(uproject_path)
-  if not uproject_path then
-    return {}
-  end
-
-  local project_dir = vim.fn.fnamemodify(uproject_path, ':h')
-  local source_dir = project_dir .. '/Source'
-
-  -- Check if Source directory exists
-  if vim.fn.isdirectory(source_dir) ~= 1 then
-    vim.notify('[Unreal] Source directory not found at: ' .. source_dir, vim.log.levels.WARN)
-    return {}
-  end
-
-  -- Find all .Target.cs files in the Source directory
-  local target_files = vim.fn.glob(source_dir .. '/*.Target.cs', false, true)
-  if #target_files == 0 then
-    vim.notify('[Unreal] No .Target.cs files found in: ' .. source_dir, vim.log.levels.WARN)
-    return {}
-  end
-
-  local targets = {}
-  for _, file_path in ipairs(target_files) do
-    -- Extract the filename without path and extension
-    local target_name = vim.fn.fnamemodify(file_path, ':t:r')
-    -- Remove the .Target suffix to get the actual target name
-    target_name = target_name:gsub('%.Target$', '')
-    table.insert(targets, target_name)
-  end
-
-  return targets
+-- Locate .uproject file
+local function find_uproject()
+	return find_in_parents(nil, "*.uproject")
 end
 
-local cached_engine_base = nil
-
--- Asynchronously determines the Unreal Engine base path.
--- Tries config, cache, .uproject hints, standard paths, env var, then prompts user.
--- Calls the provided callback with the found path (string) or nil on failure/cancellation.
-local function get_engine_base(uproject_path, callback)
-  -- Check user-set config path first
-  if config.engine_path and config.engine_path ~= '' then
-    local real_path = vim.loop.fs_realpath(config.engine_path)
-    if real_path then
-      callback(real_path)
-      return
-    end
-  end
-
-  -- Check cache
-  if cached_engine_base then
-    callback(cached_engine_base)
-    return
-  end
-
-  local engine_base = nil
-
-  -- TODO: Implement sync checks: .uproject parsing, standard paths
-  -- Placeholder for sync checks
-  -- if engine_base then
-  --   cached_engine_base = engine_base
-  --   callback(engine_base)
-  --   return
-  -- end
-
-  -- Try environment variable
-  engine_base = os.getenv 'UE_ENGINE_PATH'
-  if engine_base and vim.loop.fs_stat(engine_base .. '/Engine/Build/BatchFiles') then
-    cached_engine_base = engine_base
-    callback(engine_base)
-    return
-  end
-
-  -- Prompt user as last resort
-  vim.ui.input({ prompt = 'Unreal Engine path not found. Please enter the path to the Engine directory:' }, function(input_path)
-    if input_path and input_path ~= '' then
-      local real_path = vim.loop.fs_realpath(input_path)
-      if real_path and vim.loop.fs_stat(real_path .. '/Engine/Build/BatchFiles') then
-        config.engine_path = real_path -- Store for this session only if prompted
-        cached_engine_base = real_path
-        vim.notify('[Unreal] Engine path set to: ' .. real_path)
-        callback(real_path)
-      else
-        vim.notify('[Unreal] Invalid engine path provided: ' .. input_path, vim.log.levels.ERROR)
-        cached_engine_base = nil
-        callback(nil)
-      end
-    else
-      vim.notify('[Unreal] Engine path selection cancelled.', vim.log.levels.WARN)
-      cached_engine_base = nil
-      callback(nil)
-    end
-  end)
+-- Locate Unreal Engine root via GenerateProjectFiles
+local function find_engine_root()
+	local patterns = { "/GenerateProjectFiles.bat", "/GenerateProjectFiles.sh", "/GenerateProjectFiles.command" }
+	local dir = vim.loop.fs_realpath(vim.fn.getcwd()) or vim.fn.getcwd()
+	while dir and dir ~= "" do
+		for _, pat in ipairs(patterns) do
+			if vim.loop.fs_stat(dir .. pat) then
+				return dir
+			end
+		end
+		local parent = vim.fn.fnamemodify(dir, ":h")
+		if parent == dir then
+			break
+		end
+		dir = parent
+	end
+	return nil
 end
 
--- Constructs the Unreal Build Tool (UBT) command string.
-local function make_ubt_command(mode, uproject, target, platform, config_, engine_path)
-  local eng_base = engine_path
-  local is_win = vim.fn.has 'win32' == 1
-
-  local script
-  if is_win then
-    script = eng_base .. [[\Engine\Build\BatchFiles\Build.bat]]
-  else
-    local uname = vim.loop.os_uname().sysname
-    if uname == 'Darwin' then
-      script = eng_base .. '/Engine/Build/BatchFiles/Mac/Build.sh'
-    else -- Assume Linux otherwise
-      script = eng_base .. '/Engine/Build/BatchFiles/Linux/Build.sh'
-    end
-  end
-
-  -- Escape the script path to handle spaces or special characters
-  local cmd_parts = { vim.fn.shellescape(script) }
-  table.insert(cmd_parts, target) -- e.g., MyProjectEditor
-  table.insert(cmd_parts, platform) -- e.g., Win64, Mac, Linux
-  table.insert(cmd_parts, config_) -- e.g., Development, Shipping
-  -- UBT uses different argument prefixes for project path depending on OS
-  table.insert(cmd_parts, (is_win and '-Project=' or '-project=') .. vim.fn.shellescape(uproject))
-
-  if mode == 'header' then
-    -- Generate IntelliSense data without a full build
-    table.insert(cmd_parts, '-SkipBuild')
-  elseif mode == 'compile' then
-    -- Generate compile_commands.json for clangd
-    table.insert(cmd_parts, '-Mode=GenerateClangDatabase')
-    local proj_dir = vim.fn.fnamemodify(uproject, ':h')
-    table.insert(cmd_parts, '-OutputDir=' .. vim.fn.shellescape(proj_dir)) -- Place compile_commands.json in project root
-    table.insert(cmd_parts, '-game') -- Include game modules
-    table.insert(cmd_parts, '-engine') -- Include engine modules
-    table.insert(cmd_parts, '-NoHotReload') -- Avoid hot reload conflicts
-  end
-  -- Note: Other modes (like 'build') don't need extra flags here
-
-  return table.concat(cmd_parts, ' ')
+local function is_valid_engine_path(path)
+	return path and vim.loop.fs_stat(path .. "/Engine/Build/BatchFiles") ~= nil
 end
 
--- Output window management
-local output_bufnr = nil
-local output_winid = nil
+-- Save engine path to cache and optionally to .ueinfo file
+local function save_engine_path(path, uproj)
+	cached_engine_root = path
 
--- Ensures the output window exists and is ready.
+	-- Save to .ueinfo if we have a project file
+	if uproj then
+		local info_path = vim.fn.fnamemodify(uproj, ":h") .. "/.ueinfo"
+		local fd = io.open(info_path, "w")
+		if fd then
+			fd:write("UEPath=" .. path)
+			fd:close()
+			vim.notify("[Unreal] Saved engine path to .ueinfo", vim.log.levels.INFO)
+		end
+	end
+
+	return path
+end
+
+-- Get and cache engine root, optionally save to .ueinfo
+local function get_engine_root(scope, callback)
+	-- Check explicit 'engine_path' in config or cache
+	if config.engine_path and is_valid_engine_path(config.engine_path) then
+		return callback(config.engine_path)
+	elseif cached_engine_root then
+		return callback(cached_engine_root)
+	end
+
+	local uproj = (scope == "Project") and find_uproject() or nil
+
+	-- Project-specific lookup via .ueinfo
+	if uproj then
+		local info = vim.fn.fnamemodify(uproj, ":h") .. "/.ueinfo"
+		local fd = io.open(info, "r")
+		if fd then
+			local path = fd:read("*l"):match("^UEPath=(.+)")
+			fd:close()
+			if is_valid_engine_path(path) then
+				cached_engine_root = path
+				-- No need to save .ueinfo again.
+				return callback(path)
+			end
+		end
+	end
+
+	-- Check UE_ENGINE_PATH environment variable
+	local env_path = os.getenv("UE_ENGINE_PATH")
+	if is_valid_engine_path(env_path) then
+		return callback(save_engine_path(env_path, uproj))
+	end
+
+	-- Locate engine root by searching parent dirs
+	local root = find_engine_root()
+	if is_valid_engine_path(root) then
+		return callback(save_engine_path(root, uproj))
+	end
+
+	-- Prompt user for engine path
+	vim.ui.input({ prompt = "Enter Unreal Engine path:" }, function(input)
+		if not input or input == "" then
+			vim.notify("[Unreal] Engine path selection cancelled.", vim.log.levels.WARN)
+			return callback(nil)
+		end
+		local real = vim.loop.fs_realpath(input)
+		if is_valid_engine_path(real) then
+			return callback(save_engine_path(real, uproj))
+		end
+		vim.notify("[Unreal] Invalid engine path: " .. input, vim.log.levels.ERROR)
+		return callback(nil)
+	end)
+end
+
+-- Construct UnrealBuildTool command
+local function make_ubt_cmd(mode, uproj, target, plat, conf, eng_root)
+	local is_win = vim.fn.has("win32") == 1
+	local script = eng_root
+		.. (
+			is_win and "/Engine/Build/BatchFiles/Build.bat"
+			or (
+				vim.loop.os_uname().sysname == "Darwin" and "/Engine/Build/BatchFiles/Mac/Build.sh"
+				or "/Engine/Build/BatchFiles/Linux/Build.sh"
+			)
+		)
+	local parts = { vim.fn.shellescape(script), target, plat, conf }
+	if uproj then
+		table.insert(parts, (is_win and "-Project=" or "-project=") .. vim.fn.shellescape(uproj))
+	end
+	if mode == MODES.HEADER then
+		table.insert(parts, "-SkipBuild")
+	elseif mode == MODES.COMPILE then
+		local outdir
+		if uproj then
+			outdir = vim.fn.fnamemodify(uproj, ":p:h") -- Get directory containing .uproject
+		else
+			outdir = eng_root -- Use engine root directly
+		end
+		vim.list_extend(parts, {
+			"-Mode=GenerateClangDatabase",
+			"-OutputDir=" .. vim.fn.shellescape(outdir),
+			"-game",
+			"-engine",
+			"-NoHotReload",
+		})
+	end
+	return table.concat(parts, " ")
+end
+
+-- Build output window
 local function ensure_output_window()
-  -- If window exists and is valid, just clear its buffer and return
-  if output_winid and vim.api.nvim_win_is_valid(output_winid) then
-    vim.api.nvim_buf_set_lines(output_bufnr, 0, -1, false, {}) -- Clear buffer content
-    return
-  end
-
-  -- Create a new buffer for the output
-  output_bufnr = vim.api.nvim_create_buf(false, true) -- false = not listed, true = scratch buffer
-  vim.api.nvim_buf_set_option(output_bufnr, 'bufhidden', 'wipe') -- Wipe buffer when hidden
-  vim.api.nvim_buf_set_option(output_bufnr, 'buftype', 'nofile') -- Not related to a file
-  vim.api.nvim_buf_set_option(output_bufnr, 'swapfile', false) -- No swap file needed
-  vim.api.nvim_buf_set_option(output_bufnr, 'modifiable', true) -- Allow writing output to it
-  vim.api.nvim_buf_set_name(output_bufnr, 'Unreal Build Output') -- Set buffer name
-
-  -- Floating window configuration
-  local width = math.floor(vim.o.columns * 0.8) -- 80% of editor width
-  local height = math.floor(vim.o.lines * 0.6) -- 60% of editor height
-  local row = math.floor((vim.o.lines - height) / 2) -- Center vertically
-  local col = math.floor((vim.o.columns - width) / 2) -- Center horizontally
-
-  -- Open the floating window
-  output_winid = vim.api.nvim_open_win(output_bufnr, true, { -- true = enter the window
-    relative = 'editor', -- Position relative to the editor grid
-    width = width,
-    height = height,
-    row = row,
-    col = col,
-    style = 'minimal', -- No number column, etc.
-    border = 'single', -- Use single-line border
-  })
-  -- Set highlight group for the floating window border
-  vim.api.nvim_win_set_option(output_winid, 'winhl', 'Normal:Normal,FloatBorder:FloatBorder')
+	if UE.win and vim.api.nvim_win_is_valid(UE.win) then
+		vim.api.nvim_buf_set_lines(UE.buf, 0, -1, false, {})
+		return
+	end
+	UE.buf = vim.api.nvim_create_buf(false, true)
+	UE.win = vim.api.nvim_open_win(UE.buf, true, {
+		relative = "editor",
+		width = math.floor(vim.o.columns * 0.8),
+		height = math.floor(vim.o.lines * 0.6),
+		row = math.floor((vim.o.lines - vim.o.lines * 0.6) / 2),
+		col = math.floor((vim.o.columns - vim.o.columns * 0.8) / 2),
+		style = "minimal",
+		border = "single",
+	})
 end
 
--- Appends lines of data to the output window.
-local function append_to_output(data)
-  if not output_bufnr or not vim.api.nvim_buf_is_valid(output_bufnr) then
-    return
-  end
-
-  local lines = {}
-  if data then
-    for _, line in ipairs(data) do
-      -- Remove trailing carriage return (for Windows job output)
-      if line and line ~= '' then
-        line = line:gsub('\r$', '')
-        table.insert(lines, line)
-      end
-    end
-  end
-
-  if #lines > 0 then
-    vim.api.nvim_buf_set_lines(output_bufnr, -1, -1, false, lines)
-    -- Auto-scroll
-    if output_winid and vim.api.nvim_win_is_valid(output_winid) then
-      vim.api.nvim_win_set_cursor(output_winid, { vim.api.nvim_buf_line_count(output_bufnr), 0 })
-    end
-  end
+local function append_output(lines)
+	if not (UE.buf and vim.api.nvim_buf_is_valid(UE.buf)) then
+		return
+	end
+	-- strip Windows CR (shows as ^M) from each line
+	for i, l in ipairs(lines) do
+		lines[i] = l:gsub("\r$", "")
+	end
+	vim.api.nvim_buf_set_lines(UE.buf, -1, -1, false, lines)
+	if UE.win and vim.api.nvim_win_is_valid(UE.win) then
+		vim.api.nvim_win_set_cursor(UE.win, { vim.api.nvim_buf_line_count(UE.buf), 0 })
+	end
 end
 
--- Utility to restart clangd LSP server using LspRestart
-local function restart_clangd_lsp()
-  vim.cmd("LspRestart clangd")
+-- Invoke UnrealBuildTool
+local function run_ubt(scope, mode)
+	local uproj = (scope == "Project") and find_uproject() or nil
+	if scope == "Project" and not uproj then
+		return vim.notify("[Unreal][Project] .uproject not found", vim.log.levels.ERROR)
+	end
+
+	get_engine_root(scope, function(root)
+		if not root then
+			return vim.notify(string.format("[Unreal][%s] engine path missing", scope), vim.log.levels.ERROR)
+		end
+		local base = (scope == "Project") and vim.fn.fnamemodify(uproj, ":h") or root
+		local pat = (scope == "Project") and "/Source/*.Target.cs" or "/Engine/Source/**/*.Target.cs"
+		local files = vim.fn.glob(base .. pat, true, true)
+		local targets = {}
+		for _, f in ipairs(files) do
+			local name = vim.fn.fnamemodify(f, ":t:r"):gsub("%.Target$", "")
+			table.insert(targets, name)
+		end
+		if #targets == 0 then
+			local d = vim.fn.fnamemodify(uproj or root, ":t:r")
+			targets = { d .. (scope == "Project" and "Editor" or "") }
+			vim.notify(string.format("[Unreal][%s] defaulting to %s", scope, targets[1]), vim.log.levels.WARN)
+		end
+
+		local plat = vim.fn.has("win32") == 1 and "Win64"
+			or (vim.loop.os_uname().sysname == "Darwin" and "Mac" or "Linux")
+		vim.notify(string.format("[Unreal][%s] platform: %s", scope, plat), vim.log.levels.INFO)
+
+		vim.ui.select(targets, { prompt = "Target (" .. scope .. "):" }, function(t)
+			if not t then
+				return
+			end
+			vim.ui.select(CONFIGS, { prompt = "Configuration:" }, function(c)
+				if not c then
+					return
+				end
+				local cmd = make_ubt_cmd(mode, uproj, t, plat, c, root)
+				ensure_output_window()
+				append_output({ "Starting UBT:", cmd, "" })
+				vim.fn.jobstart(cmd, {
+					cwd = base,
+					on_stdout = function(_, d)
+						append_output(d)
+					end,
+					on_stderr = function(_, d)
+						append_output(d)
+					end,
+					on_exit = function(_, code)
+						append_output({ "", "Exit code: " .. code })
+						vim.notify(
+							string.format("[Unreal][%s] done (%d)", scope, code),
+							code == 0 and vim.log.levels.INFO or vim.log.levels.ERROR
+						)
+						if code == 0 then
+							vim.cmd("LspRestart clangd")
+						end
+					end,
+				})
+			end)
+		end)
+	end)
 end
 
--- Main function to initiate a build process (build, header gen, compile db).
-local function run_build(mode)
-  local buf_path = vim.fn.expand '%:p'
-  local start_dir = (buf_path ~= '' and buf_path) or vim.loop.cwd()
-  local uproject = find_uproject(start_dir)
-  if not uproject then
-    vim.notify('[Unreal] .uproject file not found.', vim.log.levels.ERROR)
-    return
-  end
-
-  -- Get target names from .Target.cs files
-  local targets = find_target_names(uproject)
-
-  -- Fallback to default targets if none found
-  if #targets == 0 then
-    local proj_name = vim.fn.fnamemodify(uproject, ':t:r')
-    vim.notify('[Unreal] No target files found, using default targets based on project name', vim.log.levels.WARN)
-    targets = { proj_name .. 'Editor', proj_name, proj_name .. 'Server' }
-  end
-
-  local proj_dir = vim.fn.fnamemodify(uproject, ':h')
-  local configs = { 'DebugGame', 'Development', 'Shipping', 'Debug' }
-  local platform
-  if vim.fn.has 'win32' == 1 then
-    platform = 'Win64'
-  else
-    local uname = vim.loop.os_uname().sysname
-    platform = (uname == 'Darwin' and 'Mac') or 'Linux'
-  end
-  vim.notify('[Unreal] Auto-detected platform: ' .. platform, vim.log.levels.INFO)
-
-  local mode_desc = {
-    build = 'Building',
-    header = 'Generating headers for',
-    compile = 'Creating compile_commands.json for',
-  }
-
-  -- Get engine path (potentially async), then proceed
-  get_engine_base(uproject, function(engine_path)
-    if not engine_path then
-      vim.notify('[Unreal] Could not determine Unreal Engine base path. Build cancelled.', vim.log.levels.ERROR)
-      return
-    end
-
-    vim.ui.select(targets, { prompt = 'Unreal Build Target:' }, function(choice_target)
-      if not choice_target then
-        return
-      end
-      local choice_platform = platform -- Use auto-detected platform
-      vim.ui.select(configs, { prompt = 'Build Configuration:' }, function(choice_config)
-        if not choice_config then
-          return
-        end
-
-        local full_cmd = make_ubt_command(mode, uproject, choice_target, choice_platform, choice_config, engine_path)
-        if not full_cmd then
-          vim.notify('[Unreal] Failed to create build command.', vim.log.levels.ERROR)
-          return
-        end
-
-        ensure_output_window()
-        append_to_output { 'Starting Unreal Build...', 'Command: ' .. full_cmd, '' }
-
-        local action = mode_desc[mode] or 'Running UBT for'
-        vim.notify(action .. ' ' .. choice_target .. ' (' .. choice_platform .. ', ' .. choice_config .. ') - See output window')
-
-        -- Run UBT via jobstart, piping output
-        vim.fn.jobstart(full_cmd, {
-          cwd = proj_dir,
-          pty = false, -- Use pipes to avoid terminal escape codes
-          on_stdout = function(_, data, _)
-            append_to_output(data)
-          end,
-          on_stderr = function(_, data, _)
-            append_to_output(data)
-          end,
-          on_exit = function(_, code, _)
-            local status = (code == 0 and 'completed successfully' or 'failed with code ' .. code)
-            append_to_output { '', 'Build ' .. status .. '.' }
-            vim.notify('[Unreal] Build ' .. status .. '.', (code == 0 and vim.log.levels.INFO or vim.log.levels.ERROR))
-            -- Restart clangd if build succeeded and clangd is running
-            if code == 0 then
-              restart_clangd_lsp()
-            end
-          end,
-        })
-      end)
-    end)
-  end)
+-- Write .clangd configuration
+local function write_clangd(root)
+	if not root then
+		return vim.notify("[Unreal] .clangd root not found", vim.log.levels.ERROR)
+	end
+	local path = root .. "/.clangd"
+	local fd = io.open(path, "w")
+	if not fd then
+		return vim.notify("[Unreal] Failed to write .clangd", vim.log.levels.ERROR)
+	end
+	local lines = {
+		"CompileFlags:",
+		'  Add: ["-std=c++17", "--background-index", "--clang-tidy"]',
+		"Index:",
+		"  Background: true",
+		"Diagnostics:",
+		'  Suppress: ["unused-variable", "unused-parameter"]',
+		"ClangTidy:",
+		'  Add: ["modernize*", "performance*"]',
+	}
+	fd:write(table.concat(lines, "\n") .. "\n")
+	fd:close()
+	vim.notify("[Unreal] Generated .clangd at " .. path, vim.log.levels.INFO)
+	vim.cmd("LspRestart clangd")
 end
 
-UE_Nvim.run_build = run_build
-
--- Creates a basic .clangd configuration file in the project root.
-local function write_clangd_config()
-  local uproj = find_uproject(vim.loop.cwd())
-  if not uproj then
-    vim.notify('[Unreal] .uproject not found for generating .clangd file.', vim.log.levels.ERROR)
-    return
-  end
-  local project_dir = vim.fn.fnamemodify(uproj, ':h')
-  local clangd_path = project_dir .. '/.clangd'
-
-  local lines = {
-    'CompileFlags:',
-    '  Add: [',
-    '    "-D__INTELLISENSE__", -- Helps clangd parse UE macros',
-    '    "-std=c++17",',
-    '    "-Wno-microsoft-cast",',
-    '    "-Wno-deprecated-declarations"',
-  }
-
-  if vim.fn.has 'win32' == 1 then
-    table.insert(lines, '    ,"--driver-mode=cl",')
-    table.insert(lines, '    "-fms-compatibility",')
-    table.insert(lines, '    "-fdelayed-template-parsing"')
-  end
-
-  table.insert(lines, '  ]')
-  table.insert(lines, '')
-  table.insert(lines, 'Index:')
-  table.insert(lines, '  Background: true')
-  table.insert(lines, '')
-  table.insert(lines, 'Diagnostics:')
-  table.insert(lines, '  Suppress: ["unused-variable", "unused-parameter", "unknown-pragmas"]')
-  table.insert(lines, '  ClangTidy:')
-  table.insert(lines, '    Add: ["modernize*", "performance*"]')
-  table.insert(lines, '    Remove: ["modernize-use-trailing-return-type", "modernize-use-auto"]')
-
-  local fd = io.open(clangd_path, 'w')
-  if fd then
-    fd:write(table.concat(lines, '\n') .. '\n')
-    fd:close()
-    vim.notify('[Unreal] Generated .clangd at ' .. clangd_path)
-    restart_clangd_lsp()
-  else
-    vim.notify('[Unreal] Failed to write .clangd file.', vim.log.levels.ERROR)
-  end
+-- Setup function and commands
+function UE.setup(opts)
+	config.engine_path = opts.engine_path or config.engine_path
+	config.auto_register_clangd = opts.auto_register_clangd or config.auto_register_clangd
+	if config.auto_register_clangd then
+		local ok, lspconfig = pcall(require, "lspconfig")
+		if ok and lspconfig.clangd then
+			lspconfig.clangd.setup({
+				cmd = {
+					"clangd",
+					"--background-index",
+					"--clang-tidy",
+					"--header-insertion=iwyu",
+					"--completion-style=detailed",
+				},
+				on_attach = function(_, buf)
+					vim.bo[buf].omnifunc = "v:lua.vim.lsp.omnifunc"
+				end,
+				root_dir = lspconfig.util.root_pattern("*.uproject", "compile_commands.json", ".git"),
+				init_options = { compilationDatabasePath = ".", fallbackFlags = { "-std=c++17" } },
+			})
+			vim.notify("[Unreal] clangd configured", vim.log.levels.INFO)
+		else
+			vim.notify("[Unreal] nvim-lspconfig or clangd missing", vim.log.levels.WARN)
+		end
+	end
+	for _, scope in ipairs({ "Project", "Engine" }) do
+		vim.api.nvim_create_user_command("UEBuild" .. scope, function()
+			run_ubt(scope, MODES.BUILD)
+		end, {})
+		vim.api.nvim_create_user_command("UEHeader" .. scope, function()
+			run_ubt(scope, MODES.HEADER)
+		end, {})
+		vim.api.nvim_create_user_command("UECompileCommands" .. scope, function()
+			run_ubt(scope, MODES.COMPILE)
+		end, {})
+		vim.api.nvim_create_user_command("UEClangdConfig" .. scope, function()
+			if scope == "Project" then
+				local uproj_path = find_uproject()
+				if not uproj_path then
+					vim.notify("[Unreal][Project] .uproject not found for Clangd config.", vim.log.levels.ERROR)
+					return
+				end
+				write_clangd(vim.fn.fnamemodify(uproj_path, ":h"))
+			else -- Engine scope
+				get_engine_root(scope, function(engine_root_path)
+					if not engine_root_path then
+						vim.notify("[Unreal][Engine] Engine path not found for Clangd config.", vim.log.levels.ERROR)
+						return
+					end
+					write_clangd(engine_root_path)
+				end)
+			end
+		end, {})
+	end
 end
 
-UE_Nvim.write_clangd_config = write_clangd_config
-
--- Plugin setup function, called by user config.
-function UE_Nvim.setup(opts)
-  opts = opts or {}
-  config.engine_path = opts.engine_path -- Allow overriding engine path
-  config.auto_register_clangd = opts.auto_lsp or opts.auto_register_clangd
-
-  if config.auto_register_clangd then
-    local ok, lspconfig = pcall(require, 'lspconfig')
-    if ok and lspconfig.clangd then
-      local clangd_opts = {
-        cmd = {
-          'clangd',
-          '--background-index',
-          '--clang-tidy',
-          '--header-insertion=iwyu',
-          '--completion-style=detailed',
-          '--function-arg-placeholders',
-          '--fallback-style=llvm',
-        },
-        on_attach = function(client, bufnr)
-          vim.api.nvim_set_option_value('omnifunc', 'v:lua.vim.lsp.omnifunc', { buf = bufnr })
-        end,
-        -- Use .uproject location as root to find compile_commands.json
-        root_dir = lspconfig.util.root_pattern('*.uproject', 'compile_commands.json', '.git'),
-        init_options = {
-          compilationDatabasePath = '.',
-          fallbackFlags = { '-std=c++17' },
-          clangdFileStatus = true,
-        },
-      }
-
-      if vim.fn.has 'win32' == 1 then
-        table.insert(clangd_opts.cmd, '--query-driver=**/*cl.exe,**/*clang-cl.exe')
-        table.insert(clangd_opts.cmd, '--offset-encoding=utf-16')
-      end
-
-      lspconfig.clangd.setup(clangd_opts)
-      vim.notify('[Unreal] clangd configured for Unreal Engine development', vim.log.levels.INFO)
-    else
-      vim.notify('[Unreal] nvim-lspconfig not found; cannot auto-register clangd.', vim.log.levels.WARN)
-    end
-  end
-end
-
--- Register commands only when the file is run directly (e.g., via plugin/unreal.lua)
--- and not when required as a module.
-if not package.loaded['unreal-nvim.init'] then -- Check specific module name
-  vim.api.nvim_create_user_command('UEBuild', function()
-    run_build 'build'
-  end, {})
-  vim.api.nvim_create_user_command('UEHeader', function()
-    run_build 'header'
-  end, {})
-  vim.api.nvim_create_user_command('UECompileCommands', function()
-    run_build 'compile'
-  end, {})
-  vim.api.nvim_create_user_command('UEClangdConfig', write_clangd_config, {})
-end
-
-return UE_Nvim
+return UE
