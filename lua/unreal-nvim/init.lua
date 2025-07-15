@@ -359,8 +359,24 @@ function UE.setup(opts)
 				end
 				telescope.find_files({
 					prompt_title = "Unreal Engine Source",
-					cwd = engine_root .. "/Engine/Source",
-					find_command = { "rg", "--files", "--hidden", "--glob", "!**/.git/**" },
+					cwd = engine_root,
+					find_command = {
+						"rg",
+						"--files",
+						"--hidden",
+						"--glob",
+						"!**/.git/**",
+						"--glob",
+						"!**/Intermediate/**",
+						"--glob",
+						"!**/Binaries/**",
+						"--glob",
+						"!**/DerivedDataCache/**",
+						"--glob",
+						"!**/Saved/**",
+						"--glob",
+						"!**/Build/**",
+					},
 				})
 			end)
 		end, {})
