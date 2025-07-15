@@ -35,21 +35,24 @@ local function find_uproject()
 	return find_in_parents(nil, "*.uproject")
 end
 
--- Locate Unreal Engine root via GenerateProjectFiles
+-- Locate Unreal Engine root via /Engine/Source directory
 local function find_engine_root()
-	local patterns = { "/GenerateProjectFiles.bat", "/GenerateProjectFiles.sh", "/GenerateProjectFiles.command" }
 	local dir = vim.loop.fs_realpath(vim.fn.getcwd()) or vim.fn.getcwd()
+	local sep = package.config:sub(1, 1)
+	local drive_root = dir:match("^%a:[/\\]$")
 	while dir and dir ~= "" do
-		for _, pat in ipairs(patterns) do
-			if vim.loop.fs_stat(dir .. pat) then
-				return dir
-			end
+		-- Normalize slashes
+		dir = dir:gsub("[/\\]+$", "")
+		local test_path = dir .. sep .. "Engine" .. sep .. "Source"
+		if vim.loop.fs_stat(test_path) then
+			return dir
 		end
 		local parent = vim.fn.fnamemodify(dir, ":h")
-		if parent == dir then
+		if parent == dir or drive_root then
 			break
 		end
 		dir = parent
+		drive_root = dir:match("^%a:[/\\]$")
 	end
 	return nil
 end
@@ -206,7 +209,7 @@ local function run_ubt(scope, mode)
 		return vim.notify("[Unreal][Project] .uproject not found", vim.log.levels.ERROR)
 	end
 
-	get_engine_root(scope, function(root)
+	get_engine_root(function(root)
 		if not root then
 			return vim.notify(string.format("[Unreal][%s] engine path missing", scope), vim.log.levels.ERROR)
 		end
@@ -338,7 +341,7 @@ function UE.setup(opts)
 				end
 				write_clangd(vim.fn.fnamemodify(uproj_path, ":h"))
 			else -- Engine scope
-				get_engine_root(scope, function(engine_root_path)
+				get_engine_root(function(engine_root_path)
 					if not engine_root_path then
 						vim.notify("[Unreal][Engine] Engine path not found for Clangd config.", vim.log.levels.ERROR)
 						return
@@ -376,6 +379,14 @@ function UE.setup(opts)
 						"!**/Saved/**",
 						"--glob",
 						"!**/Build/**",
+						"--glob",
+						"!**/Content/**",
+						"--glob",
+						"!**/*.{dll,exe,so,dylib,lib,a,o,obj,pdb,rsp}",
+						"--glob",
+						"!**/*.{uasset,umap}",
+						"--glob",
+						"!**/*.{png,jpg,jpeg,gif,svg,webp,bmp,psd,tga,tif,tiff}",
 					},
 				})
 			end)
