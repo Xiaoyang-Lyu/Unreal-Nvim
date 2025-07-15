@@ -77,7 +77,7 @@ local function save_engine_path(path, uproj)
 end
 
 -- Get and cache engine root, optionally save to .ueinfo
-local function get_engine_root(scope, callback)
+local function get_engine_root(callback)
 	-- Check explicit 'engine_path' in config or cache
 	if config.engine_path and is_valid_engine_path(config.engine_path) then
 		return callback(config.engine_path)
@@ -85,7 +85,7 @@ local function get_engine_root(scope, callback)
 		return callback(cached_engine_root)
 	end
 
-	local uproj = (scope == "Project") and find_uproject() or nil
+	local uproj = find_uproject() or nil
 
 	-- Project-specific lookup via .ueinfo
 	if uproj then
@@ -105,13 +105,15 @@ local function get_engine_root(scope, callback)
 	-- Check UE_ENGINE_PATH environment variable
 	local env_path = os.getenv("UE_ENGINE_PATH")
 	if is_valid_engine_path(env_path) then
-		return callback(save_engine_path(env_path, uproj))
+		save_engine_path(env_path, uproj)
+		return callback(env_path)
 	end
 
 	-- Locate engine root by searching parent dirs
 	local root = find_engine_root()
 	if is_valid_engine_path(root) then
-		return callback(save_engine_path(root, uproj))
+		save_engine_path(root, uproj)
+		return callback(root)
 	end
 
 	-- Prompt user for engine path
@@ -122,7 +124,8 @@ local function get_engine_root(scope, callback)
 		end
 		local real = vim.loop.fs_realpath(input)
 		if is_valid_engine_path(real) then
-			return callback(save_engine_path(real, uproj))
+			save_engine_path(real, uproj)
+			return callback(real)
 		end
 		vim.notify("[Unreal] Invalid engine path: " .. input, vim.log.levels.ERROR)
 		return callback(nil)
@@ -290,6 +293,8 @@ end
 function UE.setup(opts)
 	config.engine_path = opts.engine_path or config.engine_path
 	config.auto_register_clangd = opts.auto_register_clangd or config.auto_register_clangd
+
+	-- Clangd auto-registration
 	if config.auto_register_clangd then
 		local ok, lspconfig = pcall(require, "lspconfig")
 		if ok and lspconfig.clangd then
@@ -312,6 +317,8 @@ function UE.setup(opts)
 			vim.notify("[Unreal] nvim-lspconfig or clangd missing", vim.log.levels.WARN)
 		end
 	end
+
+	-- Create commands for each scope and mode
 	for _, scope in ipairs({ "Project", "Engine" }) do
 		vim.api.nvim_create_user_command("UEBuild" .. scope, function()
 			run_ubt(scope, MODES.BUILD)
@@ -340,6 +347,31 @@ function UE.setup(opts)
 				end)
 			end
 		end, {})
+	end
+
+	-- Setup optional Telescope integration for engine source browsing
+	if pcall(require, "telescope") then
+		local telescope = require("telescope.builtin")
+		vim.api.nvim_create_user_command("TelescopeUnrealSource", function()
+			get_engine_root(function(engine_root)
+				if not engine_root then
+					return vim.notify("[Unreal][Engine] Engine path not found for browsing.", vim.log.levels.ERROR)
+				end
+				telescope.find_files({
+					prompt_title = "Unreal Engine Source",
+					cwd = engine_root .. "/Engine/Source",
+					find_command = { "rg", "--files", "--hidden", "--glob", "!**/.git/**" },
+				})
+			end)
+		end, {})
+		vim.api.nvim_set_keymap(
+			"n",
+			"<leader>su",
+			":TelescopeUnrealSource<CR>",
+			{ noremap = true, silent = true, desc = "Telescope Unreal Engine Source" }
+		)
+	else
+		vim.notify("[Unreal] Telescope not found, engine source browsing disabled.", vim.log.levels.WARN)
 	end
 end
 
