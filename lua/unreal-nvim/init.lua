@@ -2,12 +2,27 @@
 
 local UE = {}
 
+-- Exclude globs for Unreal project/engine search
+local UNREAL_EXCLUDE_GLOBS = {
+	"--glob", "!**/.git/**",
+	"--glob", "!**/Intermediate/**",
+	"--glob", "!**/Binaries/**",
+	"--glob", "!**/DerivedDataCache/**",
+	"--glob", "!**/Saved/**",
+	"--glob", "!**/Build/**",
+	"--glob", "!**/Content/**",
+	"--glob", "!**/*.{dll,exe,so,dylib,lib,a,o,obj,pdb,rsp}",
+	"--glob", "!**/*.{uasset,umap}",
+	"--glob", "!**/*.{png,jpg,jpeg,gif,svg,webp,bmp,psd,tga,tif,tiff}",
+}
+
 -- Configuration defaults
 local config = {
 	engine_path = nil,
 	auto_register_clangd = false,
 }
 local cached_engine_root = nil
+local cached_project_root = nil
 
 -- Supported modes and build configurations
 local MODES = { BUILD = "build", HEADER = "header", COMPILE = "compile" }
@@ -30,9 +45,25 @@ local function find_in_parents(start_dir, pattern)
 	return nil
 end
 
--- Locate .uproject file
+-- Locate .uproject file and cache project root
 local function find_uproject()
-	return find_in_parents(nil, "*.uproject")
+	local uproj = find_in_parents(nil, "*.uproject")
+	if uproj then
+		cached_project_root = vim.fn.fnamemodify(uproj, ":h")
+	end
+	return uproj
+end
+
+-- Get project root (cached)
+local function get_project_root()
+	if cached_project_root then
+		return cached_project_root
+	end
+	local uproj = find_uproject()
+	if uproj then
+		return vim.fn.fnamemodify(uproj, ":h")
+	end
+	return nil
 end
 
 -- Locate Unreal Engine root via /Engine/Source directory
@@ -352,54 +383,93 @@ function UE.setup(opts)
 		end, {})
 	end
 
-	-- Setup optional Telescope integration for engine source browsing
-	if pcall(require, "telescope") then
-		local telescope = require("telescope.builtin")
-		vim.api.nvim_create_user_command("TelescopeUnrealSource", function()
-			get_engine_root(function(engine_root)
-				if not engine_root then
-					return vim.notify("[Unreal][Engine] Engine path not found for browsing.", vim.log.levels.ERROR)
-				end
-				telescope.find_files({
-					prompt_title = "Unreal Engine Source",
-					cwd = engine_root,
-					find_command = {
-						"rg",
-						"--files",
-						"--hidden",
-						"--glob",
-						"!**/.git/**",
-						"--glob",
-						"!**/Intermediate/**",
-						"--glob",
-						"!**/Binaries/**",
-						"--glob",
-						"!**/DerivedDataCache/**",
-						"--glob",
-						"!**/Saved/**",
-						"--glob",
-						"!**/Build/**",
-						"--glob",
-						"!**/Content/**",
-						"--glob",
-						"!**/*.{dll,exe,so,dylib,lib,a,o,obj,pdb,rsp}",
-						"--glob",
-						"!**/*.{uasset,umap}",
-						"--glob",
-						"!**/*.{png,jpg,jpeg,gif,svg,webp,bmp,psd,tga,tif,tiff}",
-					},
-				})
-			end)
-		end, {})
-		vim.api.nvim_set_keymap(
-			"n",
-			"<leader>su",
-			":TelescopeUnrealSource<CR>",
-			{ noremap = true, silent = true, desc = "Telescope Unreal Engine Source" }
-		)
-	else
-		vim.notify("[Unreal] Telescope not found, engine source browsing disabled.", vim.log.levels.WARN)
+	-- Setup keymaps for Unreal commands
+	local function set_unreal_keymaps()
+		local map = function(lhs, cmd, desc)
+			vim.api.nvim_set_keymap("n", lhs, cmd, { noremap = true, silent = true, desc = desc })
+		end
+		map("<leader>ub", ":UEBuildProject<CR>", "Unreal Build Project")
+		map("<leader>uB", ":UEBuildEngine<CR>", "Unreal Build Engine")
+		map("<leader>uh", ":UEHeaderProject<CR>", "Unreal Header Project")
+		map("<leader>uH", ":UEHeaderEngine<CR>", "Unreal Header Engine")
+		map("<leader>uc", ":UECompileCommandsProject<CR>", "Unreal CompileCommands Project")
+		map("<leader>uC", ":UECompileCommandsEngine<CR>", "Unreal CompileCommands Engine")
+		map("<leader>ux", ":UEClangdConfigProject<CR>", "Unreal ClangdConfig Project")
+		map("<leader>uX", ":UEClangdConfigEngine<CR>", "Unreal ClangdConfig Engine")
+		map("<leader>up", ":UECwdProject<CR>", "Set CWD to Unreal Project Root")
+		map("<leader>ue", ":UECwdEngine<CR>", "Set CWD to Unreal Engine Root")
+		map("<leader>uf", ":TelescopeUnrealRootsFindFiles<CR>", "Telescope Find Files (Project+Engine)")
+		map("<leader>ug", ":TelescopeUnrealRootsGrep<CR>", "Telescope Grep (Project+Engine)")
 	end
+
+	-- Set CWD to project root
+	vim.api.nvim_create_user_command("UECwdProject", function()
+		local root = get_project_root()
+		if root then
+			vim.cmd("cd " .. vim.fn.fnameescape(root))
+			vim.notify("[Unreal] CWD set to project root: " .. root, vim.log.levels.INFO)
+		else
+			vim.notify("[Unreal] Project root not found.", vim.log.levels.ERROR)
+		end
+	end, {})
+
+	-- Set CWD to engine root
+	vim.api.nvim_create_user_command("UECwdEngine", function()
+		get_engine_root(function(root)
+			if root then
+				vim.cmd("cd " .. vim.fn.fnameescape(root))
+				vim.notify("[Unreal] CWD set to engine root: " .. root, vim.log.levels.INFO)
+			else
+				vim.notify("[Unreal] Engine root not found.", vim.log.levels.ERROR)
+			end
+		end)
+	end, {})
+
+	-- Telescope: Find files in both project and engine roots
+	vim.api.nvim_create_user_command("TelescopeUnrealRootsFindFiles", function()
+		local telescope = require("telescope.builtin")
+		local roots = {}
+		local project_root = get_project_root()
+		if project_root then table.insert(roots, project_root) end
+		get_engine_root(function(engine_root)
+			if engine_root then table.insert(roots, engine_root) end
+			if #roots == 0 then
+				return vim.notify("[Unreal] No roots found for Telescope.", vim.log.levels.ERROR)
+			end
+			local find_cmd = { "rg", "--files", "--hidden" }
+			for _, v in ipairs(UNREAL_EXCLUDE_GLOBS) do
+				table.insert(find_cmd, v)
+			end
+			telescope.find_files({
+				prompt_title = "Unreal Project + Engine Files",
+				search_dirs = roots,
+				find_command = find_cmd,
+			})
+		end)
+	end, {})
+
+	-- Telescope: Grep in both project and engine roots
+	vim.api.nvim_create_user_command("TelescopeUnrealRootsGrep", function()
+		local telescope = require("telescope.builtin")
+		local roots = {}
+		local project_root = get_project_root()
+		if project_root then table.insert(roots, project_root) end
+		get_engine_root(function(engine_root)
+			if engine_root then table.insert(roots, engine_root) end
+			if #roots == 0 then
+				return vim.notify("[Unreal] No roots found for Telescope.", vim.log.levels.ERROR)
+			end
+			telescope.live_grep({
+				prompt_title = "Unreal Project + Engine Grep",
+				search_dirs = roots,
+				additional_args = function()
+					return vim.deepcopy(UNREAL_EXCLUDE_GLOBS)
+				end,
+			})
+		end)
+	end, {})
+
+	set_unreal_keymaps()
 end
 
 return UE
