@@ -265,6 +265,8 @@ end
 function UE.setup(opts)
 	config.engine_path = opts.engine_path or config.engine_path
 	config.auto_register_clangd = opts.auto_register_clangd or config.auto_register_clangd
+	-- Try to find the project on load.
+	find_uproject()
 
 	if config.auto_register_clangd and has_lspconfig and lspconfig.clangd then
 		lspconfig.clangd.setup({
