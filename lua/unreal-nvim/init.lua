@@ -5,17 +5,28 @@ local has_lspconfig, lspconfig = pcall(require, "lspconfig")
 local has_telescope, telescope = pcall(require, "telescope.builtin")
 
 local UNREAL_EXCLUDE_GLOBS = {
-	"--glob", "!**/.git/**",
-	"--glob", "!**/Intermediate/**",
-	"--glob", "!**/Binaries/**",
-	"--glob", "!**/DerivedDataCache/**",
-	"--glob", "!**/Saved/**",
-	"--glob", "!**/Build/**",
-	"--glob", "!**/Content/**",
-	"--glob", "!**/.{vscode,idea,vs,cache}/**",
-	"--glob", "!**/*.{dll,exe,so,dylib,lib,a,o,obj,pdb,rsp,idx,clangd}",
-	"--glob", "!**/*.{uasset,umap}",
-	"--glob", "!**/*.{png,jpg,jpeg,gif,svg,webp,bmp,psd,tga,tif,tiff}",
+	"--glob",
+	"!**/.git/**",
+	"--glob",
+	"!**/Intermediate/**",
+	"--glob",
+	"!**/Binaries/**",
+	"--glob",
+	"!**/DerivedDataCache/**",
+	"--glob",
+	"!**/Saved/**",
+	"--glob",
+	"!**/Build/**",
+	"--glob",
+	"!**/Content/**",
+	"--glob",
+	"!**/.{vscode,idea,vs,cache}/**",
+	"--glob",
+	"!**/*.{dll,exe,so,dylib,lib,a,o,obj,pdb,rsp,idx,clangd}",
+	"--glob",
+	"!**/*.{uasset,umap}",
+	"--glob",
+	"!**/*.{png,jpg,jpeg,gif,svg,webp,bmp,psd,tga,tif,tiff}",
 }
 
 local config = { engine_path = nil, auto_register_clangd = false }
@@ -29,7 +40,9 @@ local function find_in_parents(start, glob)
 			return files[1]
 		end
 		local parent = vim.fn.fnamemodify(dir, ":h")
-		if parent == dir then break end
+		if parent == dir then
+			break
+		end
 		dir = parent
 	end
 	return nil
@@ -54,7 +67,9 @@ local function find_engine_root()
 			return dir
 		end
 		local parent = vim.fn.fnamemodify(dir, ":h")
-		if parent == dir then break end
+		if parent == dir then
+			break
+		end
 		dir = parent
 	end
 	return nil
@@ -103,9 +118,9 @@ local function get_engine_root(callback)
 	if is_valid_engine_path(env) then
 		return callback(save_engine_path(env, uproj))
 	end
-	local auto = find_engine_root()
-	if is_valid_engine_path(auto) then
-		return callback(save_engine_path(auto, uproj))
+	local engine_root = find_engine_root()
+	if is_valid_engine_path(engine_root) then
+		return callback(save_engine_path(engine_root, uproj))
 	end
 	vim.ui.input({ prompt = "Enter Unreal Engine path:" }, function(input)
 		if not input or input == "" then
@@ -132,16 +147,16 @@ local function ensure_output_window()
 	local w, h = math.floor(cols * 0.5), math.floor(lines * 0.3)
 	-- Top right floating window
 	UE.win = vim.api.nvim_open_win(UE.buf, false, {
-		relative  = "editor",
-		anchor    = "NE",
-		row       = 0,
-		col       = cols,
-		width     = w,
-		height    = h,
-		style     = "minimal",
-		border    = "rounded",
+		relative = "editor",
+		anchor = "NE",
+		row = 0,
+		col = cols,
+		width = w,
+		height = h,
+		style = "minimal",
+		border = "rounded",
 		focusable = true,
-		zindex    = 50,
+		zindex = 50,
 	})
 	vim.api.nvim_win_set_option(UE.win, "winblend", 10)
 	vim.api.nvim_win_set_option(UE.win, "wrap", true)
@@ -151,12 +166,26 @@ local function ensure_output_window()
 	vim.api.nvim_buf_set_option(UE.buf, "modifiable", true)
 	vim.api.nvim_buf_set_option(UE.buf, "readonly", false)
 	-- Easily close the output window
-	vim.api.nvim_buf_set_keymap(UE.buf, "n", "q", "<cmd>q<CR>", { noremap = true, silent = true, desc = "Close Unreal Output" })
-	vim.api.nvim_buf_set_keymap(UE.buf, "n", "<Esc>", "<cmd>q<CR>", { noremap = true, silent = true, desc = "Close Unreal Output" })
+	vim.api.nvim_buf_set_keymap(
+		UE.buf,
+		"n",
+		"q",
+		"<cmd>q<CR>",
+		{ noremap = true, silent = true, desc = "Close Unreal Output" }
+	)
+	vim.api.nvim_buf_set_keymap(
+		UE.buf,
+		"n",
+		"<Esc>",
+		"<cmd>q<CR>",
+		{ noremap = true, silent = true, desc = "Close Unreal Output" }
+	)
 end
 
 local function append_output(lines)
-	if not (UE.buf and vim.api.nvim_buf_is_valid(UE.buf)) then return end
+	if not (UE.buf and vim.api.nvim_buf_is_valid(UE.buf)) then
+		return
+	end
 	for i, l in ipairs(lines) do
 		lines[i] = l:gsub("%s+$", "")
 	end
@@ -171,9 +200,9 @@ local CONFIGS = { "DebugGame", "Development", "Shipping", "Debug", "Test" }
 
 local function make_ubt_cmd(mode, uproj, target, plat, conf, eng)
 	local is_win = vim.fn.has("win32") == 1
-	local script = eng ..
-	"/Engine/Build/BatchFiles/" ..
-	(is_win and "Build.bat" or (vim.loop.os_uname().sysname == "Darwin" and "Mac/Build.sh" or "Linux/Build.sh"))
+	local script = eng
+		.. "/Engine/Build/BatchFiles/"
+		.. (is_win and "Build.bat" or (vim.loop.os_uname().sysname == "Darwin" and "Mac/Build.sh" or "Linux/Build.sh"))
 	local parts = { vim.fn.shellescape(script), target, plat, conf }
 	if uproj then
 		parts[#parts + 1] = (is_win and "-Project=" or "-project=") .. vim.fn.shellescape(uproj)
@@ -182,8 +211,13 @@ local function make_ubt_cmd(mode, uproj, target, plat, conf, eng)
 		parts[#parts + 1] = "-SkipBuild"
 	elseif mode == MODES.COMPILE then
 		local out = uproj and vim.fn.fnamemodify(uproj, ":p:h") or eng
-		vim.list_extend(parts,
-			{ "-Mode=GenerateClangDatabase", "-OutputDir=" .. vim.fn.shellescape(out), "-game", "-engine", "-NoHotReload" })
+		vim.list_extend(parts, {
+			"-Mode=GenerateClangDatabase",
+			"-OutputDir=" .. vim.fn.shellescape(out),
+			"-game",
+			"-engine",
+			"-NoHotReload",
+		})
 	end
 	return table.concat(parts, " ")
 end
@@ -209,28 +243,38 @@ local function run_ubt(scope, mode)
 			targets = { name .. (scope == "Project" and "Editor" or "") }
 			vim.notify(string.format("[Unreal][%s] defaulting to %s", scope, targets[1]), vim.log.levels.WARN)
 		end
-		local plat = vim.fn.has("win32") == 1 and "Win64" or
-		(vim.loop.os_uname().sysname == "Darwin" and "Mac" or "Linux")
+		local plat = vim.fn.has("win32") == 1 and "Win64"
+			or (vim.loop.os_uname().sysname == "Darwin" and "Mac" or "Linux")
 		vim.notify(string.format("[Unreal][%s] platform: %s", scope, plat), vim.log.levels.INFO)
 
 		vim.ui.select(targets, { prompt = "Target (" .. scope .. "):" }, function(t)
-			if not t then return end
+			if not t then
+				return
+			end
 			vim.ui.select(CONFIGS, { prompt = "Configuration:" }, function(c)
-				if not c then return end
+				if not c then
+					return
+				end
 				local cmd = make_ubt_cmd(mode, uproj, t, plat, c, root)
 				ensure_output_window()
 				append_output({ "Starting UBT:", cmd, "" })
 				vim.fn.jobstart(cmd, {
-					cwd       = base,
-					on_stdout = function(_, d) append_output(d) end,
-					on_stderr = function(_, d) append_output(d) end,
-					on_exit   = function(_, code)
+					cwd = base,
+					on_stdout = function(_, d)
+						append_output(d)
+					end,
+					on_stderr = function(_, d)
+						append_output(d)
+					end,
+					on_exit = function(_, code)
 						append_output({ "", "Exit code: " .. code })
 						vim.notify(
 							string.format("[Unreal][%s] done (%d)", scope, code),
 							code == 0 and vim.log.levels.INFO or vim.log.levels.ERROR
 						)
-						if code == 0 then vim.cmd("LspRestart clangd") end
+						if code == 0 then
+							vim.cmd("LspRestart clangd")
+						end
 					end,
 				})
 			end)
@@ -266,27 +310,53 @@ function UE.setup(opts)
 	config.engine_path = opts.engine_path or config.engine_path
 	config.auto_register_clangd = opts.auto_register_clangd or config.auto_register_clangd
 	-- Try to find the project on load.
-	find_uproject()
+	local uproj = find_uproject()
 
 	if config.auto_register_clangd and has_lspconfig and lspconfig.clangd then
 		lspconfig.clangd.setup({
-			cmd = { "clangd", "--background-index", "--clang-tidy", "--header-insertion=iwyu", "--completion-style=detailed" },
-			on_attach = function(_, buf) vim.bo[buf].omnifunc = "v:lua.vim.lsp.omnifunc" end,
+			cmd = {
+				"clangd",
+				"--background-index",
+				"--clang-tidy",
+				"--header-insertion=iwyu",
+				"--completion-style=detailed",
+			},
+			on_attach = function(_, buf)
+				vim.bo[buf].omnifunc = "v:lua.vim.lsp.omnifunc"
+			end,
 			root_dir = lspconfig.util.root_pattern("*.uproject", "compile_commands.json", ".git"),
 			init_options = { compilationDatabasePath = ".", fallbackFlags = { "-std=c++17" } },
 		})
+		-- Add lsp workspace folders if a project is found.
+		if uproj then
+			local project_root = vim.fn.fnamemodify(uproj, ":h")
+			vim.lsp.buf.add_workspace_folder(project_root)
+			vim.notify("[Unreal] Added workspace folder: " .. project_root, vim.log.levels.INFO)
+		end
 	end
 
 	for _, scope in ipairs({ "Project", "Engine" }) do
-		vim.api.nvim_create_user_command("UEBuild" .. scope, function() run_ubt(scope, MODES.BUILD) end, {})
-		vim.api.nvim_create_user_command("UEHeader" .. scope, function() run_ubt(scope, MODES.HEADER) end, {})
-		vim.api.nvim_create_user_command("UECompileCommands" .. scope, function() run_ubt(scope, MODES.COMPILE) end, {})
+		vim.api.nvim_create_user_command("UEBuild" .. scope, function()
+			run_ubt(scope, MODES.BUILD)
+		end, {})
+		vim.api.nvim_create_user_command("UEHeader" .. scope, function()
+			run_ubt(scope, MODES.HEADER)
+		end, {})
+		vim.api.nvim_create_user_command("UECompileCommands" .. scope, function()
+			run_ubt(scope, MODES.COMPILE)
+		end, {})
 		vim.api.nvim_create_user_command("UEClangdConfig" .. scope, function()
 			if scope == "Project" then
 				local u = find_uproject()
-				if u then write_clangd(vim.fn.fnamemodify(u, ":h")) end
+				if u then
+					write_clangd(vim.fn.fnamemodify(u, ":h"))
+				end
 			else
-				get_engine_root(function(r) if r then write_clangd(r) end end)
+				get_engine_root(function(r)
+					if r then
+						write_clangd(r)
+					end
+				end)
 			end
 		end, {})
 	end
@@ -334,9 +404,13 @@ function UE.setup(opts)
 		vim.api.nvim_create_user_command("TelescopeUnrealFind", function()
 			local roots = {}
 			local u = find_uproject()
-			if u then table.insert(roots, vim.fn.fnamemodify(u, ":h")) end
+			if u then
+				table.insert(roots, vim.fn.fnamemodify(u, ":h"))
+			end
 			get_engine_root(function(r)
-				if r then table.insert(roots, r) end
+				if r then
+					table.insert(roots, r)
+				end
 				telescope.find_files({ prompt_title = "Unreal Find", search_dirs = roots, find_command = find_cmd })
 			end)
 		end, {})
@@ -344,9 +418,13 @@ function UE.setup(opts)
 		vim.api.nvim_create_user_command("TelescopeUnrealGrep", function()
 			local roots = {}
 			local u = find_uproject()
-			if u then table.insert(roots, vim.fn.fnamemodify(u, ":h")) end
+			if u then
+				table.insert(roots, vim.fn.fnamemodify(u, ":h"))
+			end
 			get_engine_root(function(r)
-				if r then table.insert(roots, r) end
+				if r then
+					table.insert(roots, r)
+				end
 				telescope.live_grep({ prompt_title = "Unreal Grep", search_dirs = roots, additional_args = grep_args })
 			end)
 		end, {})
