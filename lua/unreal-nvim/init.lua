@@ -199,10 +199,10 @@ local MODES = { BUILD = "build", HEADER = "header", COMPILE = "compile" }
 local CONFIGS = { "DebugGame", "Development", "Shipping", "Debug", "Test" }
 
 local function make_ubt_cmd(mode, uproj, target, plat, conf, eng)
-	local is_win = vim.fn.has("win32") == 1
+	local is_win = 1
 	local script = eng
 		.. "/Engine/Build/BatchFiles/"
-		.. (is_win and "Build.bat" or (vim.loop.os_uname().sysname == "Darwin" and "Mac/Build.sh" or "Build.bat"))
+		.. (is_win and "Build.bat" or (vim.loop.os_uname().sysname == "Darwin" and "Mac/Build.sh" or "Linux/Build.sh"))
 	local parts = { vim.fn.shellescape(script), target, plat, conf }
 	if uproj then
 		parts[#parts + 1] = (is_win and "-Project=" or "-project=") .. vim.fn.shellescape(uproj)
@@ -243,8 +243,7 @@ local function run_ubt(scope, mode)
 			targets = { name .. (scope == "Project" and "Editor" or "") }
 			vim.notify(string.format("[Unreal][%s] defaulting to %s", scope, targets[1]), vim.log.levels.WARN)
 		end
-		local plat = vim.fn.has("win32") == 1 and "Win64"
-			or (vim.loop.os_uname().sysname == "Darwin" and "Mac" or "Linux")
+		local plat =  "Win64"
 		vim.notify(string.format("[Unreal][%s] platform: %s", scope, plat), vim.log.levels.INFO)
 
 		vim.ui.select(targets, { prompt = "Target (" .. scope .. "):" }, function(t)
