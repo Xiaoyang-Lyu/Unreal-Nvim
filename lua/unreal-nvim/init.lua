@@ -202,7 +202,7 @@ local function make_ubt_cmd(mode, uproj, target, plat, conf, eng)
 	local is_win = vim.fn.has("win32") == 1
 	local script = eng
 		.. "/Engine/Build/BatchFiles/"
-		.. (is_win and "Build.bat" or (vim.loop.os_uname().sysname == "Darwin" and "Mac/Build.sh" or "Linux/Build.sh"))
+		.. (is_win and "Build.bat" or (vim.loop.os_uname().sysname == "Darwin" and "Mac/Build.sh" or "Build.bat"))
 	local parts = { vim.fn.shellescape(script), target, plat, conf }
 	if uproj then
 		parts[#parts + 1] = (is_win and "-Project=" or "-project=") .. vim.fn.shellescape(uproj)
